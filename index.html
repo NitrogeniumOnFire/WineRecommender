@@ -24,15 +24,67 @@
   </script>
   <style>
     /* gold-styled double range visuals */
-    .range-track { position: relative; height: 10px; }
-    input[type=range].double { -webkit-appearance:none; appearance:none; width:100%; background:transparent; position: absolute; left:0; top:0; z-index: 2; }
-    input[type=range].double::-webkit-slider-thumb{ -webkit-appearance:none; width:16px; height:16px; border-radius:50%; background:#bfa56a; border:2px solid #1a1410; cursor:pointer; position: relative; z-index: 3; }
-    input[type=range].double::-moz-range-thumb{ width:16px; height:16px; border-radius:50%; background:#bfa56a; border:2px solid #1a1410; cursor:pointer; }
+    .range-track { position: relative; height: 20px; display: flex; align-items: center; }
+    input[type=range].double { 
+      -webkit-appearance:none; 
+      appearance:none; 
+      width:100%; 
+      height: 20px;
+      background:transparent; 
+      position: absolute; 
+      left:0; 
+      top: 50%;
+      transform: translateY(-50%);
+      margin: 0;
+      padding: 0;
+      z-index: 2; 
+    }
+    input[type=range].double::-webkit-slider-thumb{ 
+      -webkit-appearance:none; 
+      width:16px; 
+      height:16px; 
+      border-radius:50%; 
+      background:#bfa56a; 
+      border:2px solid #1a1410; 
+      cursor:pointer; 
+      margin-top: -6px;
+    }
+    input[type=range].double::-moz-range-thumb{ 
+      width:16px; 
+      height:16px; 
+      border-radius:50%; 
+      background:#bfa56a; 
+      border:2px solid #1a1410; 
+      cursor:pointer; 
+    }
+    input[type=range].double::-webkit-slider-runnable-track {
+      height: 10px;
+      background: transparent;
+    }
+    input[type=range].double::-moz-range-track {
+      height: 10px;
+      background: transparent;
+    }
     input[type=range]#priceMax { z-index: 1; }
     /* visual track behind the ranges */
-    .track-bg{ height:10px; background:linear-gradient(90deg,#3a342e, #3a342e); border-radius:8px; }
+    .track-bg{ 
+      height:10px; 
+      width: 100%;
+      background:linear-gradient(90deg,#3a342e, #3a342e); 
+      border-radius:8px; 
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+    }
     /* selected segment overlay */
-    .track-selected{ position:absolute; height:10px; background:linear-gradient(90deg,#bfa56a,#bfa56a); border-radius:8px; top:0; }
+    .track-selected{ 
+      position:absolute; 
+      height:10px; 
+      background:linear-gradient(90deg,#bfa56a,#bfa56a); 
+      border-radius:8px; 
+      top: 50%;
+      transform: translateY(-50%);
+    }
 
     details summary { list-style:none; cursor:pointer; }
     details[open] summary::after{ content: " ▴"; }
@@ -335,28 +387,43 @@ const loadingIndicator = document.getElementById('loadingIndicator');
 
 // Parse CSV function - improved to handle quoted fields with commas
 function parseCSV(text) {
+  if (!text || typeof text !== 'string') {
+    console.error('Invalid CSV text provided');
+    return [];
+  }
+  
   const lines = text.split('\n').filter(line => line.trim());
-  if (lines.length === 0) return [];
+  if (lines.length === 0) {
+    console.error('CSV file appears to be empty');
+    return [];
+  }
   
   // Parse header
   const headers = parseCSVLine(lines[0]);
+  console.log(`CSV headers: ${headers.length} columns`, headers.slice(0, 5));
   const wines = [];
 
   for (let i = 1; i < lines.length; i++) {
     if (!lines[i].trim()) continue;
     
-    const values = parseCSVLine(lines[i]);
-    
-    if (values.length >= headers.length) {
-      const wine = {};
-      headers.forEach((header, idx) => {
-        const value = values[idx] || '';
-        wine[header] = value.trim().replace(/^"|"$/g, '');
-      });
-      wines.push(wine);
+    try {
+      const values = parseCSVLine(lines[i]);
+      
+      if (values.length > 0) {
+        const wine = {};
+        headers.forEach((header, idx) => {
+          const value = values[idx] || '';
+          wine[header] = value.trim().replace(/^"|"$/g, '');
+        });
+        wines.push(wine);
+      }
+    } catch (err) {
+      console.warn(`Error parsing line ${i + 1}:`, err);
+      // Continue with next line
     }
   }
 
+  console.log(`Parsed ${wines.length} wines from CSV`);
   return wines;
 }
 
@@ -395,12 +462,29 @@ async function loadData() {
   
   try {
     // Load CSV
+    console.log('Loading CSV file...');
     const csvResponse = await fetch('df.csv');
     if (!csvResponse.ok) {
       throw new Error(`Failed to load CSV: ${csvResponse.status} ${csvResponse.statusText}`);
     }
+    
+    // Check content type
+    const contentType = csvResponse.headers.get('content-type');
+    console.log('CSV content-type:', contentType);
+    
     const csvText = await csvResponse.text();
+    console.log(`CSV file size: ${csvText.length} characters, first 200 chars:`, csvText.substring(0, 200));
+    
+    if (!csvText || csvText.length < 100) {
+      throw new Error('CSV file appears to be empty or too small');
+    }
+    
     allWines = parseCSV(csvText);
+    
+    if (allWines.length === 0) {
+      throw new Error('No wines parsed from CSV file. Check CSV format.');
+    }
+    
     console.log(`✅ Loaded ${allWines.length} wines from CSV`);
 
     // Load embeddings with better error handling
@@ -513,18 +597,38 @@ function setupFilters() {
   });
 
   // Update price range based on actual data
-  const prices = allWines.map(w => Number(w.price) || 0).filter(p => p > 0);
+  const prices = allWines.map(w => {
+    const price = w.price ? Number(w.price) : null;
+    return price && !isNaN(price) && price > 0 ? price : null;
+  }).filter(p => p !== null);
+  
   if (prices.length > 0) {
     const minPrice = Math.floor(Math.min(...prices));
     const maxPrice = Math.ceil(Math.max(...prices));
+    // Add some padding to max price for better UX
+    const paddedMax = Math.ceil(maxPrice * 1.1);
+    
+    console.log(`Price range: $${minPrice} - $${maxPrice} (setting max to $${paddedMax})`);
+    
     priceMinEl.min = minPrice;
-    priceMinEl.max = maxPrice;
+    priceMinEl.max = paddedMax;
     priceMaxEl.min = minPrice;
-    priceMaxEl.max = maxPrice;
+    priceMaxEl.max = paddedMax;
     priceMinEl.value = minPrice;
-    priceMaxEl.value = maxPrice;
+    priceMaxEl.value = paddedMax;
     priceMin = minPrice;
-    priceMax = maxPrice;
+    priceMax = paddedMax;
+    updatePriceDisplay();
+    updateTrack();
+  } else {
+    console.warn('No valid prices found in data');
+    // Set default range
+    priceMinEl.min = 0;
+    priceMinEl.max = 1000;
+    priceMaxEl.min = 0;
+    priceMaxEl.max = 1000;
+    priceMinEl.value = 0;
+    priceMaxEl.value = 1000;
     updatePriceDisplay();
     updateTrack();
   }
