@@ -490,20 +490,43 @@ async function loadData() {
     // Load embeddings with better error handling
     let embeddingsData;
     try {
+      console.log('Loading embeddings file...');
       const embeddingsResponse = await fetch('wine_embeddings.json');
+      
       if (!embeddingsResponse.ok) {
-        throw new Error(`Failed to load embeddings: ${embeddingsResponse.status}`);
+        throw new Error(`HTTP ${embeddingsResponse.status}: ${embeddingsResponse.statusText}`);
       }
       
       // Check if response is actually JSON
-      const contentType = embeddingsResponse.headers.get('content-type');
-      if (!contentType || !contentType.includes('application/json')) {
+      const contentType = embeddingsResponse.headers.get('content-type') || '';
+      console.log('Embeddings content-type:', contentType);
+      
+      if (!contentType.includes('application/json') && !contentType.includes('text/json')) {
+        // Read as text first to see what we got
         const text = await embeddingsResponse.text();
-        console.error('Response is not JSON. First 100 chars:', text.substring(0, 100));
-        throw new Error('Embeddings file is not valid JSON. It may be served as HTML or another format.');
+        const preview = text.substring(0, 200);
+        console.error('Response is not JSON. Content-type:', contentType);
+        console.error('Response preview:', preview);
+        
+        // Check if it's an HTML error page
+        if (text.trim().toLowerCase().startsWith('<!doctype') || text.includes('<html')) {
+          throw new Error('Embeddings file returned HTML instead of JSON. The file may be too large for GitHub Pages or Git LFS is not working. File size: ~934MB is too large for direct serving.');
+        }
+        
+        throw new Error(`Embeddings file is not valid JSON. Content-type: ${contentType}. First 200 chars: ${preview}`);
       }
       
-      embeddingsData = await embeddingsResponse.json();
+      // Try to parse JSON
+      const text = await embeddingsResponse.text();
+      console.log(`Embeddings file size: ${text.length} characters`);
+      
+      // Check if it looks like JSON
+      if (!text.trim().startsWith('{') && !text.trim().startsWith('[')) {
+        console.error('File does not start with { or [, first 200 chars:', text.substring(0, 200));
+        throw new Error('Embeddings file does not appear to be valid JSON');
+      }
+      
+      embeddingsData = JSON.parse(text);
       
       // Validate JSON structure
       if (!embeddingsData.embeddings || !Array.isArray(embeddingsData.embeddings)) {
@@ -513,8 +536,22 @@ async function loadData() {
       console.log(`✅ Loaded ${embeddingsData.count} embeddings`);
     } catch (embedError) {
       console.error('Error loading embeddings:', embedError);
-      // Continue without embeddings - filters will still work
-      loadingIndicator.innerHTML = `<div class="text-yellow-400 mb-2">⚠️ Warning: Could not load embeddings: ${embedError.message}</div><div class="text-sm text-muted">Filters will work, but semantic search is disabled.</div>`;
+      
+      // Show user-friendly error message
+      const errorMsg = embedError.message.includes('too large') 
+        ? 'Embeddings file (934MB) is too large for GitHub Pages. Semantic search is disabled, but filters will work.'
+        : `Could not load embeddings: ${embedError.message}. Semantic search is disabled, but filters will work.`;
+      
+      // Don't block the UI - show warning but continue
+      const warningDiv = document.createElement('div');
+      warningDiv.className = 'mb-4 p-3 bg-yellow-900/30 border border-yellow-600 rounded-lg';
+      warningDiv.innerHTML = `
+        <div class="text-yellow-400 font-semibold mb-1">⚠️ Semantic Search Disabled</div>
+        <div class="text-sm text-yellow-300">${errorMsg}</div>
+        <div class="text-xs text-yellow-400/80 mt-2">You can still use filters to find wines.</div>
+      `;
+      document.querySelector('main').insertBefore(warningDiv, document.querySelector('main').firstChild);
+      
       // Create dummy embeddings data structure
       embeddingsData = { embeddings: [], count: 0 };
     }
@@ -709,7 +746,10 @@ document.addEventListener('change', (e) => {
 
 // Perform search
 async function performSearch() {
-  if (!retriever) return;
+  if (!retriever) {
+    console.warn('Retriever not initialized');
+    return;
+  }
 
   const query = queryEl.value.trim();
   const varieties = [...document.querySelectorAll('.varietyCheck:checked')].map(n => n.value);
@@ -721,6 +761,15 @@ async function performSearch() {
   searchBtn.disabled = true;
 
   try {
+    // If there's a query but no embeddings, show a message
+    if (query && retriever.embeddings.length === 0) {
+      cardsEl.innerHTML = `<div class='text-center text-yellow-400 col-span-full mt-10 p-4'>
+        <div class="font-semibold mb-2">⚠️ Semantic Search Unavailable</div>
+        <div class="text-sm">Embeddings are not loaded. Please use filters to find wines, or try again later.</div>
+      </div>`;
+      return;
+    }
+    
     const results = await retriever.searchByFiltersAsync(
       query || null,
       varieties,
@@ -733,7 +782,11 @@ async function performSearch() {
     renderCards(results);
   } catch (error) {
     console.error('Search error:', error);
-    cardsEl.innerHTML = `<div class='text-center text-red-400 col-span-full mt-10'>Error performing search: ${error.message}</div>`;
+    cardsEl.innerHTML = `<div class='text-center text-red-400 col-span-full mt-10 p-4'>
+      <div class="font-semibold mb-2">Error performing search</div>
+      <div class="text-sm">${error.message}</div>
+      <div class="text-xs text-muted mt-2">Try using filters instead.</div>
+    </div>`;
   } finally {
     loadingIndicator.classList.add('hidden');
     searchBtn.disabled = false;
