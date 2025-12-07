@@ -1,2 +1,0 @@
-# WineRecommender
-RecSys Project
