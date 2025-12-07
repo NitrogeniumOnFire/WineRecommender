@@ -1,0 +1,33 @@
+# Ignore nested WineRecommender directory (duplicate/old version)
+WineRecommender/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Large files (handled by Git LFS, but ignore if not tracked)
+*.pkl
+*.h5
+*.npy
+
