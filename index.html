@@ -487,46 +487,129 @@ async function loadData() {
     
     console.log(`✅ Loaded ${allWines.length} wines from CSV`);
 
-    // Load embeddings with better error handling
+    // Load embeddings with Git LFS handling
     let embeddingsData;
     try {
       console.log('Loading embeddings file...');
-      const embeddingsResponse = await fetch('wine_embeddings.json');
+      
+      // First, try to fetch the file
+      let embeddingsResponse = await fetch('wine_embeddings.json', {
+        headers: {
+          'Accept': 'application/json'
+        }
+      });
       
       if (!embeddingsResponse.ok) {
         throw new Error(`HTTP ${embeddingsResponse.status}: ${embeddingsResponse.statusText}`);
       }
       
-      // Check if response is actually JSON
-      const contentType = embeddingsResponse.headers.get('content-type') || '';
-      console.log('Embeddings content-type:', contentType);
+      // Read as text to check if it's a Git LFS pointer
+      const text = await embeddingsResponse.text();
+      console.log(`Initial response size: ${text.length} characters`);
       
-      if (!contentType.includes('application/json') && !contentType.includes('text/json')) {
-        // Read as text first to see what we got
-        const text = await embeddingsResponse.text();
-        const preview = text.substring(0, 200);
-        console.error('Response is not JSON. Content-type:', contentType);
-        console.error('Response preview:', preview);
+      // Check if it's a Git LFS pointer file
+      if (text.trim().startsWith('version https://git-lfs.github.com/spec/v1')) {
+        console.log('Detected Git LFS pointer file, fetching actual content...');
         
-        // Check if it's an HTML error page
-        if (text.trim().toLowerCase().startsWith('<!doctype') || text.includes('<html')) {
-          throw new Error('Embeddings file returned HTML instead of JSON. The file may be too large for GitHub Pages or Git LFS is not working. File size: ~934MB is too large for direct serving.');
+        // Parse the LFS pointer to get the oid
+        const oidMatch = text.match(/oid sha256:([a-f0-9]+)/);
+        const sizeMatch = text.match(/size (\d+)/);
+        
+        if (!oidMatch) {
+          throw new Error('Could not parse Git LFS pointer file');
         }
         
-        throw new Error(`Embeddings file is not valid JSON. Content-type: ${contentType}. First 200 chars: ${preview}`);
+        const oid = oidMatch[1];
+        const size = sizeMatch ? parseInt(sizeMatch[1]) : null;
+        console.log(`LFS OID: ${oid.substring(0, 16)}..., Size: ${size ? (size / 1024 / 1024).toFixed(2) + ' MB' : 'unknown'}`);
+        
+        // Use GitHub API to get the actual file content
+        // Format: https://api.github.com/repos/{owner}/{repo}/git/blobs/{sha}
+        // But we need the full SHA, not just the LFS pointer
+        // Alternative: Use raw.githubusercontent.com with ?raw=true or access via GitHub API
+        
+        // Use GitHub API to get the actual file content
+        // Extract repo owner and name from current URL
+        const pathParts = window.location.pathname.split('/').filter(p => p);
+        let repoOwner = 'NitrogeniumOnFire'; // default
+        let repoName = 'WineRecommender'; // default
+        
+        if (pathParts.length >= 2) {
+          repoOwner = pathParts[0];
+          repoName = pathParts[1];
+        }
+        
+        const apiUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/contents/wine_embeddings.json`;
+        
+        console.log('Fetching via GitHub API:', apiUrl);
+        const apiResponse = await fetch(apiUrl);
+        
+        if (!apiResponse.ok) {
+          const errorText = await apiResponse.text();
+          console.error('GitHub API error:', apiResponse.status, errorText);
+          throw new Error(`GitHub API error: ${apiResponse.status}. ${errorText.substring(0, 100)}`);
+        }
+        
+        const apiData = await apiResponse.json();
+        console.log('GitHub API response:', { 
+          size: apiData.size, 
+          hasDownloadUrl: !!apiData.download_url,
+          encoding: apiData.encoding 
+        });
+        
+        // For large files (>1MB), GitHub API returns download_url pointing to raw.githubusercontent.com
+        // For Git LFS files, we need to use the download_url which should serve the actual content
+        if (apiData.download_url) {
+          console.log('Using download_url from GitHub API:', apiData.download_url);
+          
+          // Try the download_url - for LFS files, this should give us the actual content
+          embeddingsResponse = await fetch(apiData.download_url, {
+            headers: {
+              'Accept': 'application/json, */*'
+            }
+          });
+          
+          if (!embeddingsResponse.ok) {
+            throw new Error(`Failed to download file: ${embeddingsResponse.status}`);
+          }
+          
+          // Read the actual content
+          const actualText = await embeddingsResponse.text();
+          console.log(`Downloaded file size: ${actualText.length} characters`);
+          
+          // Check if we still got a pointer
+          if (actualText.trim().startsWith('version https://git-lfs.github.com/spec/v1')) {
+            // Still got pointer - try using raw.githubusercontent.com with ?raw=true
+            console.log('Still got LFS pointer, trying raw.githubusercontent.com...');
+            const rawUrl = `https://raw.githubusercontent.com/${repoOwner}/${repoName}/main/wine_embeddings.json`;
+            const rawResponse = await fetch(rawUrl);
+            const rawText = await rawResponse.text();
+            
+            if (rawText.trim().startsWith('version https://git-lfs.github.com/spec/v1')) {
+              throw new Error('Git LFS file cannot be accessed directly. The file needs to be served via a different method (CDN, backend API, or split into chunks).');
+            }
+            
+            embeddingsData = JSON.parse(rawText);
+          } else {
+            // Parse JSON
+            embeddingsData = JSON.parse(actualText);
+          }
+        } else if (apiData.content && apiData.encoding === 'base64') {
+          // Small file, content is base64 encoded
+          console.log('Decoding base64 content...');
+          const decoded = atob(apiData.content.replace(/\s/g, ''));
+          embeddingsData = JSON.parse(decoded);
+        } else {
+          throw new Error('GitHub API did not return file content in expected format');
+        }
+      } else {
+        // Not an LFS pointer, parse directly
+        if (!text.trim().startsWith('{') && !text.trim().startsWith('[')) {
+          throw new Error('File does not appear to be valid JSON');
+        }
+        
+        embeddingsData = JSON.parse(text);
       }
-      
-      // Try to parse JSON
-      const text = await embeddingsResponse.text();
-      console.log(`Embeddings file size: ${text.length} characters`);
-      
-      // Check if it looks like JSON
-      if (!text.trim().startsWith('{') && !text.trim().startsWith('[')) {
-        console.error('File does not start with { or [, first 200 chars:', text.substring(0, 200));
-        throw new Error('Embeddings file does not appear to be valid JSON');
-      }
-      
-      embeddingsData = JSON.parse(text);
       
       // Validate JSON structure
       if (!embeddingsData.embeddings || !Array.isArray(embeddingsData.embeddings)) {
@@ -538,9 +621,7 @@ async function loadData() {
       console.error('Error loading embeddings:', embedError);
       
       // Show user-friendly error message
-      const errorMsg = embedError.message.includes('too large') 
-        ? 'Embeddings file (934MB) is too large for GitHub Pages. Semantic search is disabled, but filters will work.'
-        : `Could not load embeddings: ${embedError.message}. Semantic search is disabled, but filters will work.`;
+      const errorMsg = `Could not load embeddings: ${embedError.message}`;
       
       // Don't block the UI - show warning but continue
       const warningDiv = document.createElement('div');
