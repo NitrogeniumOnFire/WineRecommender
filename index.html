@@ -671,12 +671,13 @@ async function loadData() {
             throw new Error('GitHub API did not return file content in expected format');
           }
         } else {
-        // Not an LFS pointer, parse directly
-        if (!text.trim().startsWith('{') && !text.trim().startsWith('[')) {
-          throw new Error('File does not appear to be valid JSON');
+          // Not an LFS pointer, parse directly
+          if (!text.trim().startsWith('{') && !text.trim().startsWith('[')) {
+            throw new Error('File does not appear to be valid JSON');
+          }
+          
+          embeddingsData = JSON.parse(text);
         }
-        
-        embeddingsData = JSON.parse(text);
       }
       
       // Validate JSON structure
