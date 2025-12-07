@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Wine Recommender</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            oldbg: "#0f0b08",
+            oldcard: "#13100f",
+            gold: "#bfa56a",
+            muted: "#9e8f7a",
+          },
+          fontFamily: {
+            serif: ['Georgia', 'serif'],
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    /* gold-styled double range visuals */
+    .range-track { position: relative; height: 10px; }
+    input[type=range].double { -webkit-appearance:none; appearance:none; width:100%; background:transparent; position: absolute; left:0; top:0; }
+    input[type=range].double::-webkit-slider-thumb{ -webkit-appearance:none; width:16px; height:16px; border-radius:50%; background:#bfa56a; border:2px solid #1a1410; cursor:pointer; }
+    input[type=range].double::-moz-range-thumb{ width:16px; height:16px; border-radius:50%; background:#bfa56a; border:2px solid #1a1410; cursor:pointer; }
+    /* visual track behind the ranges */
+    .track-bg{ height:10px; background:linear-gradient(90deg,#3a342e, #3a342e); border-radius:8px; }
+    /* selected segment overlay */
+    .track-selected{ position:absolute; height:10px; background:linear-gradient(90deg,#bfa56a,#bfa56a); border-radius:8px; top:0; }
+
+    details summary { list-style:none; cursor:pointer; }
+    details[open] summary::after{ content: " ▴"; }
+    details summary::after{ content: " ▾"; }
+
+    /* dropdown options style — dark bg, light text, fixed height + scroll, positioned absolutely */
+    .options-box{ 
+      background: #13100f; 
+      color: #efe7dc; 
+      max-height: 9rem; 
+      overflow-y: auto; 
+      padding: 0.5rem; 
+      border-radius: 0.375rem;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      z-index: 10;
+      margin-top: 0.25rem;
+      border: 1px solid #2b261f;
+    }
+    details { position: relative; }
+    .options-box label{ display:flex; align-items:center; gap:0.5rem; padding:0.25rem 0.25rem; }
+    .options-box input[type=checkbox]{ width:16px; height:16px; }
+    
+    /* Loading state */
+    .loading { opacity: 0.6; pointer-events: none; }
+  </style>
+</head>
+<body class="min-h-screen bg-oldbg text-[#efe7dc] p-6">
+  <header class="max-w-6xl mx-auto mb-8">
+    <h1 class="text-4xl font-serif tracking-wide text-gold">Wine Recommender</h1>
+  </header>
+
+  <main class="max-w-6xl mx-auto">
+    <!-- Loading indicator -->
+    <div id="loadingIndicator" class="hidden mb-4 p-4 bg-oldcard rounded-lg border border-[#2b261f]">
+      <div class="flex items-center gap-3">
+        <div class="animate-spin rounded-full h-5 w-5 border-b-2 border-gold"></div>
+        <span class="text-sm text-muted">Loading wine data and embeddings...</span>
+      </div>
+    </div>
+
+    <!-- Search -->
+    <label class="block text-sm mb-2 text-[#d8cfae]">Describe what you'd like</label>
+    <div class="flex gap-3 mb-6">
+      <input id="query" placeholder="e.g. rich red, cherry, chocolate" class="w-full rounded-lg py-3 px-4 text-oldbg font-medium" />
+      <button id="searchBtn" class="px-5 rounded-lg font-semibold py-3 bg-gold text-oldbg hover:opacity-90 transition-opacity">Search</button>
+    </div>
+
+    <!-- Filters -->
+    <aside class="p-4 rounded-lg border border-[#2b261f] shadow-inner mb-10">
+      <h3 class="font-medium mb-4 text-[#efe3c8]">Filters</h3>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <!-- Variety -->
+        <div>
+          <label class="block text-sm mb-1">Variety</label>
+          <details id="varietyDetails" class="bg-oldcard border border-[#2b261f] rounded-lg p-2">
+            <summary id="varietySummary" class="text-muted select-none">Select variety</summary>
+            <div id="varietyOptions" class="options-box mt-2"></div>
+          </details>
+        </div>
+
+        <!-- Country -->
+        <div>
+          <label class="block text-sm mb-1">Country</label>
+          <details id="countryDetails" class="bg-oldcard border border-[#2b261f] rounded-lg p-2">
+            <summary id="countrySummary" class="text-muted select-none">Select country</summary>
+            <div id="countryOptions" class="options-box mt-2"></div>
+          </details>
+        </div>
+
+        <!-- Price (double range) -->
+        <div>
+          <label class="block text-sm mb-1">Price range</label>
+          <div class="range-track mb-2 relative">
+            <div class="track-bg"></div>
+            <div id="trackSelected" class="track-selected"></div>
+            <input type="range" id="priceMin" class="double" min="0" max="1000" value="0" step="1" />
+            <input type="range" id="priceMax" class="double" min="0" max="1000" value="1000" step="1" />
+          </div>
+          <div class="flex justify-between text-sm"><div>Min: $<span id="priceMinVal">0</span></div><div>Max: $<span id="priceMaxVal">1000</span></div></div>
+        </div>
+      </div>
+    </aside>
+
+    <div id="count" class="text-sm text-[#cfc6ad] mb-3"></div>
+
+    <section id="cards" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"></section>
+  </main>
+
+<script type="module">
+// ============================================================================
+// Wine Retriever - JavaScript version of Python WineRetriever
+// ============================================================================
+
+class WineRetriever {
+  constructor(winesData, embeddingsData) {
+    this.wines = winesData;
+    this.embeddings = embeddingsData.embeddings;
+    this.model = null;
+    this.modelLoaded = false;
+  }
+
+  async loadModel() {
+    if (this.modelLoaded) return;
+    try {
+      // Load the same model used in Python: paraphrase-multilingual-MiniLM-L12-v2
+      // Using Xenova transformers (browser-compatible version)
+      const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.6.0');
+      env.allowLocalModels = false; // Use CDN models
+      this.model = await pipeline('feature-extraction', 'Xenova/paraphrase-multilingual-MiniLM-L12-v2', {
+        quantized: true // Use quantized model for faster loading
+      });
+      this.modelLoaded = true;
+      console.log('✅ Model loaded');
+    } catch (error) {
+      console.error('Error loading model:', error);
+      throw error;
+    }
+  }
+
+  // Cosine similarity function
+  cosineSimilarity(a, b) {
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
+    
+    for (let i = 0; i < a.length; i++) {
+      dotProduct += a[i] * b[i];
+      normA += a[i] * a[i];
+      normB += b[i] * b[i];
+    }
+    
+    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+  }
+
+  async retrieve(userQuery, topK = 20) {
+    if (!this.modelLoaded) {
+      await this.loadModel();
+    }
+
+    // Encode query - matching Python: query_embedding = self.model.encode([user_query])[0]
+    const output = await this.model(userQuery, { pooling: 'mean', normalize: true });
+    // Convert tensor to array
+    const queryVector = Array.from(output.data);
+
+    // Calculate similarities - matching Python: cosine_similarity([query_embedding], self.wine_embeddings)[0]
+    const similarities = this.embeddings.map((wineEmbedding, idx) => ({
+      index: idx,
+      similarity: this.cosineSimilarity(queryVector, wineEmbedding)
+    }));
+
+    // Sort by similarity (descending) and get top K - matching Python: np.argsort(similarities)[::-1][:top_k]
+    similarities.sort((a, b) => b.similarity - a.similarity);
+    const topIndices = similarities.slice(0, topK);
+
+    // Build results - matching Python: wine_data['similarity_score'] = float(similarities[idx])
+    const retrievedWines = topIndices.map(({ index, similarity }) => {
+      const wine = { ...this.wines[index] };
+      wine.similarity_score = parseFloat(similarity.toFixed(6)); // Match Python's float conversion
+      return wine;
+    });
+
+    // Final sort by similarity - matching Python: retrieved_wines.sort(key=lambda x: x['similarity_score'], reverse=True)
+    retrievedWines.sort((a, b) => b.similarity_score - a.similarity_score);
+
+    return retrievedWines;
+  }
+
+  searchByFilters(query = null, varieties = [], countries = [], minPrice = 0, maxPrice = Infinity, topK = 10) {
+    let allResults;
+
+    if (query && query.trim()) {
+      // If there's a query, we need to do semantic search first
+      // For now, return empty and let the async retrieve handle it
+      return null; // This will be handled asynchronously
+    } else {
+      // No query - use all wines with neutral score
+      allResults = this.wines.map((wine, idx) => ({
+        ...wine,
+        similarity_score: 0.5
+      }));
+    }
+
+    // Apply filters
+    const filteredResults = allResults.filter(wine => {
+      // Variety filter
+      if (varieties.length > 0) {
+        const wineVariety = wine.variety ? String(wine.variety).toLowerCase() : '';
+        const matchesVariety = varieties.some(v => wineVariety.includes(v.toLowerCase()));
+        if (!matchesVariety) return false;
+      }
+
+      // Country filter
+      if (countries.length > 0) {
+        const wineCountry = wine.country ? String(wine.country).toLowerCase() : '';
+        const matchesCountry = countries.some(c => wineCountry.includes(c.toLowerCase()));
+        if (!matchesCountry) return false;
+      }
+
+      // Price filter
+      const price = wine.price ? Number(wine.price) : 0;
+      if (price < minPrice || price > maxPrice) return false;
+
+      return true;
+    });
+
+    // Sort by similarity and return top K
+    filteredResults.sort((a, b) => b.similarity_score - a.similarity_score);
+    return filteredResults.slice(0, topK);
+  }
+
+  async searchByFiltersAsync(query = null, varieties = [], countries = [], minPrice = 0, maxPrice = Infinity, topK = 10) {
+    let allResults;
+
+    // Matching Python: if query: all_results = self.retrieve(query, top_k=50)
+    if (query && query.trim()) {
+      // Semantic search - Python uses top_k=50 for initial retrieval
+      allResults = await this.retrieve(query, 50);
+    } else {
+      // Matching Python: else: all_results = [self.df.iloc[i].to_dict() for i in range(len(self.df))]
+      // No query - use all wines with neutral score
+      allResults = this.wines.map((wine, idx) => ({
+        ...wine,
+        similarity_score: 0.5  // Python: result['similarity_score'] = 0.5
+      }));
+    }
+
+    // Apply filters - matching Python logic exactly
+    // Python: for wine in all_results: if variety and pd.notna(wine.get('variety')): if variety.lower() not in str(wine['variety']).lower(): continue
+    const filteredResults = allResults.filter(wine => {
+      // Variety filter - Python: if variety and pd.notna(wine.get('variety')): if variety.lower() not in str(wine['variety']).lower(): continue
+      // For multiple selections (HTML checkboxes), check if ANY selected variety matches
+      if (varieties.length > 0) {
+        const wineVariety = wine.variety ? String(wine.variety).toLowerCase() : '';
+        // Check if any selected variety is contained in the wine's variety (substring match, like Python)
+        const matchesVariety = varieties.some(v => {
+          const filterVariety = v.toLowerCase();
+          return wineVariety.includes(filterVariety);
+        });
+        if (!matchesVariety) return false;
+      }
+
+      // Country filter - Python: if country and pd.notna(wine.get('country')): if country.lower() not in str(wine['country']).lower(): continue
+      if (countries.length > 0) {
+        const wineCountry = wine.country ? String(wine.country).toLowerCase() : '';
+        // Check if any selected country is contained in the wine's country (substring match, like Python)
+        const matchesCountry = countries.some(c => {
+          const filterCountry = c.toLowerCase();
+          return wineCountry.includes(filterCountry);
+        });
+        if (!matchesCountry) return false;
+      }
+
+      // Price filter - Python: if max_price and pd.notna(wine.get('price')): if wine['price'] > max_price: continue
+      // Extended to support min_price for HTML interface
+      const price = wine.price ? Number(wine.price) : null;
+      if (price !== null && !isNaN(price)) {
+        if (price < minPrice || price > maxPrice) return false;
+      } else if (minPrice > 0 || maxPrice < Infinity) {
+        // If price is null/NaN and we have price filters, exclude it (matching Python's pd.notna check)
+        return false;
+      }
+
+      return true;
+    });
+
+    // Sort by similarity and return top K - matching Python: return filtered_results[:top_k]
+    filteredResults.sort((a, b) => b.similarity_score - a.similarity_score);
+    return filteredResults.slice(0, topK);
+  }
+}
+
+// ============================================================================
+// Data Loading and UI Setup
+// ============================================================================
+
+let retriever = null;
+let allWines = [];
+let priceMin = 0;
+let priceMax = 1000;
+
+// Elements
+const varietyOptions = document.getElementById('varietyOptions');
+const countryOptions = document.getElementById('countryOptions');
+const varietySummary = document.getElementById('varietySummary');
+const countrySummary = document.getElementById('countrySummary');
+const priceMinEl = document.getElementById('priceMin');
+const priceMaxEl = document.getElementById('priceMax');
+const priceMinVal = document.getElementById('priceMinVal');
+const priceMaxVal = document.getElementById('priceMaxVal');
+const trackSelected = document.getElementById('trackSelected');
+const cardsEl = document.getElementById('cards');
+const countEl = document.getElementById('count');
+const queryEl = document.getElementById('query');
+const searchBtn = document.getElementById('searchBtn');
+const loadingIndicator = document.getElementById('loadingIndicator');
+
+// Parse CSV function - improved to handle quoted fields with commas
+function parseCSV(text) {
+  const lines = text.split('\n').filter(line => line.trim());
+  if (lines.length === 0) return [];
+  
+  // Parse header
+  const headers = parseCSVLine(lines[0]);
+  const wines = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    if (!lines[i].trim()) continue;
+    
+    const values = parseCSVLine(lines[i]);
+    
+    if (values.length >= headers.length) {
+      const wine = {};
+      headers.forEach((header, idx) => {
+        const value = values[idx] || '';
+        wine[header] = value.trim().replace(/^"|"$/g, '');
+      });
+      wines.push(wine);
+    }
+  }
+
+  return wines;
+}
+
+function parseCSVLine(line) {
+  const values = [];
+  let current = '';
+  let inQuotes = false;
+  
+  for (let j = 0; j < line.length; j++) {
+    const char = line[j];
+    const nextChar = line[j + 1];
+    
+    if (char === '"') {
+      if (inQuotes && nextChar === '"') {
+        // Escaped quote
+        current += '"';
+        j++; // Skip next quote
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === ',' && !inQuotes) {
+      values.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  values.push(current); // Add last value
+  
+  return values;
+}
+
+// Load data
+async function loadData() {
+  loadingIndicator.classList.remove('hidden');
+  
+  try {
+    // Load CSV
+    const csvResponse = await fetch('df.csv');
+    const csvText = await csvResponse.text();
+    allWines = parseCSV(csvText);
+    console.log(`✅ Loaded ${allWines.length} wines from CSV`);
+
+    // Load embeddings
+    const embeddingsResponse = await fetch('wine_embeddings.json');
+    const embeddingsData = await embeddingsResponse.json();
+    console.log(`✅ Loaded ${embeddingsData.count} embeddings`);
+
+    // Initialize retriever
+    retriever = new WineRetriever(allWines, embeddingsData);
+    
+    // Pre-load model in background
+    retriever.loadModel().then(() => {
+      console.log('✅ Model ready');
+    });
+
+    // Setup UI
+    setupFilters();
+    
+    loadingIndicator.classList.add('hidden');
+    
+    // Initial search
+    await performSearch();
+  } catch (error) {
+    console.error('Error loading data:', error);
+    loadingIndicator.innerHTML = `<div class="text-red-400">Error loading data: ${error.message}</div>`;
+  }
+}
+
+// Setup filters
+function setupFilters() {
+  // Get unique varieties and countries
+  const varieties = [...new Set(allWines.map(w => w.variety).filter(v => v && v.trim()))].sort();
+  const countries = [...new Set(allWines.map(w => w.country).filter(c => c && c.trim()))].sort();
+
+  // Populate variety options
+  varietyOptions.innerHTML = '';
+  varieties.forEach(v => {
+    const label = document.createElement('label');
+    label.className = 'flex items-center gap-2 p-1 text-sm text-[#efe7dc] cursor-pointer hover:bg-[#2b261f] rounded';
+    const chk = document.createElement('input');
+    chk.type = 'checkbox';
+    chk.value = v;
+    chk.className = 'varietyCheck';
+    label.appendChild(chk);
+    const span = document.createElement('span');
+    span.textContent = v;
+    label.appendChild(span);
+    varietyOptions.appendChild(label);
+  });
+
+  // Populate country options
+  countryOptions.innerHTML = '';
+  countries.forEach(c => {
+    const label = document.createElement('label');
+    label.className = 'flex items-center gap-2 p-1 text-sm text-[#efe7dc] cursor-pointer hover:bg-[#2b261f] rounded';
+    const chk = document.createElement('input');
+    chk.type = 'checkbox';
+    chk.value = c;
+    chk.className = 'countryCheck';
+    label.appendChild(chk);
+    const span = document.createElement('span');
+    span.textContent = c;
+    label.appendChild(span);
+    countryOptions.appendChild(label);
+  });
+
+  // Update price range based on actual data
+  const prices = allWines.map(w => Number(w.price) || 0).filter(p => p > 0);
+  if (prices.length > 0) {
+    const minPrice = Math.floor(Math.min(...prices));
+    const maxPrice = Math.ceil(Math.max(...prices));
+    priceMinEl.min = minPrice;
+    priceMinEl.max = maxPrice;
+    priceMaxEl.min = minPrice;
+    priceMaxEl.max = maxPrice;
+    priceMinEl.value = minPrice;
+    priceMaxEl.value = maxPrice;
+    priceMin = minPrice;
+    priceMax = maxPrice;
+    updatePriceDisplay();
+    updateTrack();
+  }
+}
+
+// Price range handlers
+function updatePriceDisplay() {
+  priceMinVal.textContent = priceMinEl.value;
+  priceMaxVal.textContent = priceMaxEl.value;
+  priceMin = Number(priceMinEl.value);
+  priceMax = Number(priceMaxEl.value);
+  updateTrack();
+}
+
+function updateTrack() {
+  const min = Number(priceMinEl.value);
+  const max = Number(priceMaxEl.value);
+  const range = Number(priceMaxEl.max) - Number(priceMinEl.min);
+  const left = ((min - Number(priceMinEl.min)) / range) * 100;
+  const width = ((max - min) / range) * 100;
+  trackSelected.style.left = left + '%';
+  trackSelected.style.width = Math.max(width, 0) + '%';
+}
+
+function clampRanges() {
+  let min = Number(priceMinEl.value);
+  let max = Number(priceMaxEl.value);
+  if (min > max) {
+    if (this === priceMinEl) {
+      priceMinEl.value = max;
+      min = max;
+    } else {
+      priceMaxEl.value = min;
+      max = min;
+    }
+  }
+  updatePriceDisplay();
+  performSearch();
+}
+
+priceMinEl.addEventListener('input', clampRanges);
+priceMaxEl.addEventListener('input', clampRanges);
+
+// Update summary text
+function updateSummaryText() {
+  const vCount = document.querySelectorAll('.varietyCheck:checked').length;
+  const cCount = document.querySelectorAll('.countryCheck:checked').length;
+  varietySummary.textContent = vCount ? `${vCount} selected` : 'Select variety';
+  countrySummary.textContent = cCount ? `${cCount} selected` : 'Select country';
+}
+
+document.addEventListener('change', (e) => {
+  if (e.target.matches('.varietyCheck, .countryCheck')) {
+    updateSummaryText();
+    performSearch();
+  }
+});
+
+// Perform search
+async function performSearch() {
+  if (!retriever) return;
+
+  const query = queryEl.value.trim();
+  const varieties = [...document.querySelectorAll('.varietyCheck:checked')].map(n => n.value);
+  const countries = [...document.querySelectorAll('.countryCheck:checked')].map(n => n.value);
+  const minP = Number(priceMinEl.value);
+  const maxP = Number(priceMaxEl.value);
+
+  loadingIndicator.classList.remove('hidden');
+  searchBtn.disabled = true;
+
+  try {
+    const results = await retriever.searchByFiltersAsync(
+      query || null,
+      varieties,
+      countries,
+      minP,
+      maxP,
+      20
+    );
+
+    renderCards(results);
+  } catch (error) {
+    console.error('Search error:', error);
+    cardsEl.innerHTML = `<div class='text-center text-red-400 col-span-full mt-10'>Error performing search: ${error.message}</div>`;
+  } finally {
+    loadingIndicator.classList.add('hidden');
+    searchBtn.disabled = false;
+  }
+}
+
+// Render cards
+function renderCards(list) {
+  cardsEl.innerHTML = '';
+  countEl.textContent = `Showing ${list.length} recommendation(s)`;
+  
+  if (!list.length) {
+    cardsEl.innerHTML = `<div class='text-center text-muted col-span-full mt-10'>No matches found.</div>`;
+    return;
+  }
+
+  list.forEach(w => {
+    const el = document.createElement('article');
+    el.className = 'p-5 rounded-2xl shadow-lg bg-oldcard border border-[#2a241e]';
+    
+    const title = w.title || w.name || 'Untitled Wine';
+    const region = w.region_1 || w.region || '';
+    const variety = w.variety || 'N/A';
+    const country = w.country || 'N/A';
+    const price = w.price ? Number(w.price).toFixed(2) : 'N/A';
+    const similarity = w.similarity_score ? w.similarity_score.toFixed(3) : '0.000';
+    const description = w.description || 'No description available.';
+
+    el.innerHTML = `
+      <div class='flex items-start gap-3'>
+        <div class='text-3xl'>🍷</div>
+        <div class='flex-1'>
+          <div class='font-serif text-lg' style='color: #bfa56a;'>${escapeHtml(title)} ${region ? `<span class='text-sm text-muted'>(${escapeHtml(region)})</span>` : ''}</div>
+          <div class='mt-2 text-sm text-[#cfc6ad]'>
+            <div>📍 Variety: <span class='font-medium'>${escapeHtml(variety)}</span></div>
+            <div>🌍 Country: <span class='font-medium'>${escapeHtml(country)}</span></div>
+            <div>💰 Price: <span class='font-medium'>$${price}</span></div>
+            <div>⭐ Similarity: <span class='font-medium'>${similarity}</span></div>
+          </div>
+        </div>
+      </div>
+      <div class='mt-4 text-sm text-[#e9dfc9]'>
+        <div class='font-semibold mb-2'>💡 Description:</div>
+        <p class='text-sm leading-relaxed'>${escapeHtml(description)}</p>
+      </div>`;
+    cardsEl.appendChild(el);
+  });
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Event listeners
+searchBtn.addEventListener('click', performSearch);
+queryEl.addEventListener('keypress', (e) => {
+  if (e.key === 'Enter') {
+    performSearch();
+  }
+});
+
+// Close dropdowns when clicking outside
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('details')) {
+    document.querySelectorAll('details[open]').forEach(detail => {
+      detail.removeAttribute('open');
+    });
+  }
+});
+
+// Initialize
+loadData();
+</script>
+</body>
+</html>
