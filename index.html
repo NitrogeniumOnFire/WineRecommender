@@ -487,28 +487,69 @@ async function loadData() {
     
     console.log(`✅ Loaded ${allWines.length} wines from CSV`);
 
-    // Load embeddings with Git LFS handling
+    // Load embeddings - try chunks first, then single file
     let embeddingsData;
     try {
-      console.log('Loading embeddings file...');
+      console.log('Loading embeddings...');
       
-      // First, try to fetch the file
-      let embeddingsResponse = await fetch('wine_embeddings.json', {
-        headers: {
-          'Accept': 'application/json'
+      // First, try to load from chunks (if they exist)
+      try {
+        console.log('Trying to load from chunks...');
+        const manifestResponse = await fetch('embeddings_chunks/manifest.json');
+        
+        if (manifestResponse.ok) {
+          const manifest = await manifestResponse.json();
+          console.log(`Found manifest: ${manifest.total_chunks} chunks, ${manifest.total_embeddings} total embeddings`);
+          
+          // Load all chunks in parallel
+          const chunkPromises = manifest.chunk_files.map(async (filename, idx) => {
+            console.log(`Loading chunk ${idx + 1}/${manifest.total_chunks}: ${filename}`);
+            const chunkResponse = await fetch(`embeddings_chunks/${filename}`);
+            if (!chunkResponse.ok) {
+              throw new Error(`Failed to load chunk ${filename}: ${chunkResponse.status}`);
+            }
+            return chunkResponse.json();
+          });
+          
+          const chunks = await Promise.all(chunkPromises);
+          console.log(`✅ Loaded ${chunks.length} chunks`);
+          
+          // Combine chunks into single array
+          const allEmbeddings = [];
+          for (const chunk of chunks) {
+            allEmbeddings.push(...chunk.embeddings);
+          }
+          
+          embeddingsData = {
+            embeddings: allEmbeddings,
+            count: manifest.total_embeddings,
+            dimension: manifest.dimension
+          };
+          
+          console.log(`✅ Combined ${embeddingsData.count} embeddings from chunks`);
+        } else {
+          throw new Error('Manifest not found, trying single file...');
         }
-      });
-      
-      if (!embeddingsResponse.ok) {
-        throw new Error(`HTTP ${embeddingsResponse.status}: ${embeddingsResponse.statusText}`);
-      }
-      
-      // Read as text to check if it's a Git LFS pointer
-      const text = await embeddingsResponse.text();
-      console.log(`Initial response size: ${text.length} characters`);
-      
-      // Check if it's a Git LFS pointer file
-      if (text.trim().startsWith('version https://git-lfs.github.com/spec/v1')) {
+      } catch (chunkError) {
+        console.log('Chunk loading failed, trying single file:', chunkError.message);
+        
+        // Fallback: try single file
+        let embeddingsResponse = await fetch('wine_embeddings.json', {
+          headers: {
+            'Accept': 'application/json'
+          }
+        });
+        
+        if (!embeddingsResponse.ok) {
+          throw new Error(`HTTP ${embeddingsResponse.status}: ${embeddingsResponse.statusText}`);
+        }
+        
+        // Read as text to check if it's a Git LFS pointer
+        const text = await embeddingsResponse.text();
+        console.log(`Initial response size: ${text.length} characters`);
+        
+        // Check if it's a Git LFS pointer file
+        if (text.trim().startsWith('version https://git-lfs.github.com/spec/v1')) {
         console.log('Detected Git LFS pointer file, fetching actual content...');
         
         // Parse the LFS pointer to get the oid
@@ -586,7 +627,39 @@ async function loadData() {
             const rawText = await rawResponse.text();
             
             if (rawText.trim().startsWith('version https://git-lfs.github.com/spec/v1')) {
-              throw new Error('Git LFS file cannot be accessed directly. The file needs to be served via a different method (CDN, backend API, or split into chunks).');
+              // Last resort: Try to get the actual blob via Git API
+              // This requires getting the commit SHA first, then the tree, then the blob
+              console.log('Trying to fetch via Git API (commit -> tree -> blob)...');
+              
+              // Get the latest commit
+              const commitsUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/commits?per_page=1`;
+              const commitsResponse = await fetch(commitsUrl);
+              
+              if (commitsResponse.ok) {
+                const commits = await commitsResponse.json();
+                if (commits.length > 0) {
+                  const commitSha = commits[0].sha;
+                  console.log('Latest commit SHA:', commitSha);
+                  
+                  // Get the tree
+                  const commitUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/git/commits/${commitSha}`;
+                  const commitData = await fetch(commitUrl).then(r => r.json());
+                  const treeSha = commitData.tree.sha;
+                  
+                  // Get tree with recursive to find the file
+                  const treeUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/git/trees/${treeSha}?recursive=1`;
+                  const treeData = await fetch(treeUrl).then(r => r.json());
+                  const fileEntry = treeData.tree.find(e => e.path === 'wine_embeddings.json');
+                  
+                  if (fileEntry && fileEntry.sha) {
+                    // Get the blob - but this will also be the LFS pointer
+                    // For LFS files, we need the actual content from LFS storage
+                    throw new Error(`Git LFS file detected (SHA: ${fileEntry.sha.substring(0, 16)}...). Large files tracked by Git LFS cannot be accessed directly via GitHub's HTTP API. Consider: 1) Using a backend API, 2) Splitting into chunks, 3) Using a CDN, or 4) Using GitHub Releases.`);
+                  }
+                }
+              }
+              
+              throw new Error('Git LFS file cannot be accessed directly via HTTP. The file needs to be served via a backend API, CDN, or split into smaller chunks.');
             }
             
             embeddingsData = JSON.parse(rawText);
