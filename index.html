@@ -25,9 +25,10 @@
   <style>
     /* gold-styled double range visuals */
     .range-track { position: relative; height: 10px; }
-    input[type=range].double { -webkit-appearance:none; appearance:none; width:100%; background:transparent; position: absolute; left:0; top:0; }
-    input[type=range].double::-webkit-slider-thumb{ -webkit-appearance:none; width:16px; height:16px; border-radius:50%; background:#bfa56a; border:2px solid #1a1410; cursor:pointer; }
+    input[type=range].double { -webkit-appearance:none; appearance:none; width:100%; background:transparent; position: absolute; left:0; top:0; z-index: 2; }
+    input[type=range].double::-webkit-slider-thumb{ -webkit-appearance:none; width:16px; height:16px; border-radius:50%; background:#bfa56a; border:2px solid #1a1410; cursor:pointer; position: relative; z-index: 3; }
     input[type=range].double::-moz-range-thumb{ width:16px; height:16px; border-radius:50%; background:#bfa56a; border:2px solid #1a1410; cursor:pointer; }
+    input[type=range]#priceMax { z-index: 1; }
     /* visual track behind the ranges */
     .track-bg{ height:10px; background:linear-gradient(90deg,#3a342e, #3a342e); border-radius:8px; }
     /* selected segment overlay */
@@ -395,41 +396,89 @@ async function loadData() {
   try {
     // Load CSV
     const csvResponse = await fetch('df.csv');
+    if (!csvResponse.ok) {
+      throw new Error(`Failed to load CSV: ${csvResponse.status} ${csvResponse.statusText}`);
+    }
     const csvText = await csvResponse.text();
     allWines = parseCSV(csvText);
     console.log(`✅ Loaded ${allWines.length} wines from CSV`);
 
-    // Load embeddings
-    const embeddingsResponse = await fetch('wine_embeddings.json');
-    const embeddingsData = await embeddingsResponse.json();
-    console.log(`✅ Loaded ${embeddingsData.count} embeddings`);
+    // Load embeddings with better error handling
+    let embeddingsData;
+    try {
+      const embeddingsResponse = await fetch('wine_embeddings.json');
+      if (!embeddingsResponse.ok) {
+        throw new Error(`Failed to load embeddings: ${embeddingsResponse.status}`);
+      }
+      
+      // Check if response is actually JSON
+      const contentType = embeddingsResponse.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        const text = await embeddingsResponse.text();
+        console.error('Response is not JSON. First 100 chars:', text.substring(0, 100));
+        throw new Error('Embeddings file is not valid JSON. It may be served as HTML or another format.');
+      }
+      
+      embeddingsData = await embeddingsResponse.json();
+      
+      // Validate JSON structure
+      if (!embeddingsData.embeddings || !Array.isArray(embeddingsData.embeddings)) {
+        throw new Error('Invalid embeddings JSON structure. Expected {embeddings: [], count: number}');
+      }
+      
+      console.log(`✅ Loaded ${embeddingsData.count} embeddings`);
+    } catch (embedError) {
+      console.error('Error loading embeddings:', embedError);
+      // Continue without embeddings - filters will still work
+      loadingIndicator.innerHTML = `<div class="text-yellow-400 mb-2">⚠️ Warning: Could not load embeddings: ${embedError.message}</div><div class="text-sm text-muted">Filters will work, but semantic search is disabled.</div>`;
+      // Create dummy embeddings data structure
+      embeddingsData = { embeddings: [], count: 0 };
+    }
 
     // Initialize retriever
-    retriever = new WineRetriever(allWines, embeddingsData);
-    
-    // Pre-load model in background
-    retriever.loadModel().then(() => {
-      console.log('✅ Model ready');
-    });
+    if (allWines.length > 0) {
+      retriever = new WineRetriever(allWines, embeddingsData);
+      
+      // Pre-load model in background (only if we have embeddings)
+      if (embeddingsData.count > 0) {
+        retriever.loadModel().then(() => {
+          console.log('✅ Model ready');
+        }).catch(err => {
+          console.error('Model loading error:', err);
+        });
+      }
 
-    // Setup UI
-    setupFilters();
+      // Setup UI (this will populate filters)
+      setupFilters();
+    } else {
+      throw new Error('No wine data loaded from CSV');
+    }
     
     loadingIndicator.classList.add('hidden');
     
-    // Initial search
-    await performSearch();
+    // Initial search (only if we have data)
+    if (allWines.length > 0) {
+      await performSearch();
+    }
   } catch (error) {
     console.error('Error loading data:', error);
-    loadingIndicator.innerHTML = `<div class="text-red-400">Error loading data: ${error.message}</div>`;
+    loadingIndicator.innerHTML = `<div class="text-red-400 p-4 bg-oldcard rounded-lg border border-red-600">Error loading data: ${error.message}<br><small class="text-muted">Check browser console for details.</small></div>`;
+    loadingIndicator.classList.remove('hidden');
   }
 }
 
 // Setup filters
 function setupFilters() {
+  if (!allWines || allWines.length === 0) {
+    console.warn('No wine data available for filters');
+    return;
+  }
+  
   // Get unique varieties and countries
   const varieties = [...new Set(allWines.map(w => w.variety).filter(v => v && v.trim()))].sort();
   const countries = [...new Set(allWines.map(w => w.country).filter(c => c && c.trim()))].sort();
+  
+  console.log(`Setting up filters: ${varieties.length} varieties, ${countries.length} countries`);
 
   // Populate variety options
   varietyOptions.innerHTML = '';
@@ -493,27 +542,47 @@ function updatePriceDisplay() {
 function updateTrack() {
   const min = Number(priceMinEl.value);
   const max = Number(priceMaxEl.value);
-  const range = Number(priceMaxEl.max) - Number(priceMinEl.min);
-  const left = ((min - Number(priceMinEl.min)) / range) * 100;
-  const width = ((max - min) / range) * 100;
-  trackSelected.style.left = left + '%';
-  trackSelected.style.width = Math.max(width, 0) + '%';
+  const minBound = Number(priceMinEl.min);
+  const maxBound = Number(priceMaxEl.max);
+  const range = maxBound - minBound;
+  
+  if (range > 0) {
+    const left = ((min - minBound) / range) * 100;
+    const width = ((max - min) / range) * 100;
+    trackSelected.style.left = Math.max(0, Math.min(100, left)) + '%';
+    trackSelected.style.width = Math.max(0, Math.min(100 - left, width)) + '%';
+  }
 }
 
-function clampRanges() {
+function clampRanges(e) {
   let min = Number(priceMinEl.value);
   let max = Number(priceMaxEl.value);
+  
+  // Ensure min doesn't exceed max and vice versa
   if (min > max) {
-    if (this === priceMinEl) {
+    if (e.target === priceMinEl) {
+      // If min slider moved past max, set min to max
       priceMinEl.value = max;
       min = max;
     } else {
+      // If max slider moved below min, set max to min
       priceMaxEl.value = min;
       max = min;
     }
   }
+  
+  // Ensure values are within bounds
+  const minBound = Number(priceMinEl.min);
+  const maxBound = Number(priceMinEl.max);
+  min = Math.max(minBound, Math.min(maxBound, min));
+  max = Math.max(minBound, Math.min(maxBound, max));
+  
   updatePriceDisplay();
-  performSearch();
+  
+  // Only trigger search if retriever is ready
+  if (retriever) {
+    performSearch();
+  }
 }
 
 priceMinEl.addEventListener('input', clampRanges);
