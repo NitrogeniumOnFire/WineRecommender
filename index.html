@@ -733,8 +733,20 @@ async function loadData() {
     }
   } catch (error) {
     console.error('Error loading data:', error);
-    loadingIndicator.innerHTML = `<div class="text-red-400 p-4 bg-oldcard rounded-lg border border-red-600">Error loading data: ${error.message}<br><small class="text-muted">Check browser console for details.</small></div>`;
+    console.error('Error stack:', error.stack);
+    loadingIndicator.innerHTML = `<div class="text-red-400 p-4 bg-oldcard rounded-lg border border-red-600">
+      <div class="font-semibold mb-2">❌ Error loading data</div>
+      <div class="text-sm mb-2">${error.message}</div>
+      <div class="text-xs text-muted">Check browser console (F12) for details.</div>
+      <div class="text-xs text-muted mt-2">All wines loaded: ${allWines.length}</div>
+    </div>`;
     loadingIndicator.classList.remove('hidden');
+    
+    // Still try to setup filters if we have any data
+    if (allWines && allWines.length > 0) {
+      console.log('Setting up filters with available data...');
+      setupFilters();
+    }
   }
 }
 
