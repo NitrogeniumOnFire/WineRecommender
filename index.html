@@ -550,132 +550,127 @@ async function loadData() {
         
         // Check if it's a Git LFS pointer file
         if (text.trim().startsWith('version https://git-lfs.github.com/spec/v1')) {
-        console.log('Detected Git LFS pointer file, fetching actual content...');
-        
-        // Parse the LFS pointer to get the oid
-        const oidMatch = text.match(/oid sha256:([a-f0-9]+)/);
-        const sizeMatch = text.match(/size (\d+)/);
-        
-        if (!oidMatch) {
-          throw new Error('Could not parse Git LFS pointer file');
-        }
-        
-        const oid = oidMatch[1];
-        const size = sizeMatch ? parseInt(sizeMatch[1]) : null;
-        console.log(`LFS OID: ${oid.substring(0, 16)}..., Size: ${size ? (size / 1024 / 1024).toFixed(2) + ' MB' : 'unknown'}`);
-        
-        // Use GitHub API to get the actual file content
-        // Format: https://api.github.com/repos/{owner}/{repo}/git/blobs/{sha}
-        // But we need the full SHA, not just the LFS pointer
-        // Alternative: Use raw.githubusercontent.com with ?raw=true or access via GitHub API
-        
-        // Use GitHub API to get the actual file content
-        // Extract repo owner and name from current URL
-        const pathParts = window.location.pathname.split('/').filter(p => p);
-        let repoOwner = 'NitrogeniumOnFire'; // default
-        let repoName = 'WineRecommender'; // default
-        
-        if (pathParts.length >= 2) {
-          repoOwner = pathParts[0];
-          repoName = pathParts[1];
-        }
-        
-        const apiUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/contents/wine_embeddings.json`;
-        
-        console.log('Fetching via GitHub API:', apiUrl);
-        const apiResponse = await fetch(apiUrl);
-        
-        if (!apiResponse.ok) {
-          const errorText = await apiResponse.text();
-          console.error('GitHub API error:', apiResponse.status, errorText);
-          throw new Error(`GitHub API error: ${apiResponse.status}. ${errorText.substring(0, 100)}`);
-        }
-        
-        const apiData = await apiResponse.json();
-        console.log('GitHub API response:', { 
-          size: apiData.size, 
-          hasDownloadUrl: !!apiData.download_url,
-          encoding: apiData.encoding 
-        });
-        
-        // For large files (>1MB), GitHub API returns download_url pointing to raw.githubusercontent.com
-        // For Git LFS files, we need to use the download_url which should serve the actual content
-        if (apiData.download_url) {
-          console.log('Using download_url from GitHub API:', apiData.download_url);
+          console.log('Detected Git LFS pointer file, fetching actual content...');
           
-          // Try the download_url - for LFS files, this should give us the actual content
-          embeddingsResponse = await fetch(apiData.download_url, {
-            headers: {
-              'Accept': 'application/json, */*'
-            }
+          // Parse the LFS pointer to get the oid
+          const oidMatch = text.match(/oid sha256:([a-f0-9]+)/);
+          const sizeMatch = text.match(/size (\d+)/);
+          
+          if (!oidMatch) {
+            throw new Error('Could not parse Git LFS pointer file');
+          }
+        
+          const oid = oidMatch[1];
+          const size = sizeMatch ? parseInt(sizeMatch[1]) : null;
+          console.log(`LFS OID: ${oid.substring(0, 16)}..., Size: ${size ? (size / 1024 / 1024).toFixed(2) + ' MB' : 'unknown'}`);
+          
+          // Use GitHub API to get the actual file content
+          // Extract repo owner and name from current URL
+          const pathParts = window.location.pathname.split('/').filter(p => p);
+          let repoOwner = 'NitrogeniumOnFire'; // default
+          let repoName = 'WineRecommender'; // default
+          
+          if (pathParts.length >= 2) {
+            repoOwner = pathParts[0];
+            repoName = pathParts[1];
+          }
+          
+          const apiUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/contents/wine_embeddings.json`;
+          
+          console.log('Fetching via GitHub API:', apiUrl);
+          const apiResponse = await fetch(apiUrl);
+          
+          if (!apiResponse.ok) {
+            const errorText = await apiResponse.text();
+            console.error('GitHub API error:', apiResponse.status, errorText);
+            throw new Error(`GitHub API error: ${apiResponse.status}. ${errorText.substring(0, 100)}`);
+          }
+          
+          const apiData = await apiResponse.json();
+          console.log('GitHub API response:', { 
+            size: apiData.size, 
+            hasDownloadUrl: !!apiData.download_url,
+            encoding: apiData.encoding 
           });
           
-          if (!embeddingsResponse.ok) {
-            throw new Error(`Failed to download file: ${embeddingsResponse.status}`);
-          }
-          
-          // Read the actual content
-          const actualText = await embeddingsResponse.text();
-          console.log(`Downloaded file size: ${actualText.length} characters`);
-          
-          // Check if we still got a pointer
-          if (actualText.trim().startsWith('version https://git-lfs.github.com/spec/v1')) {
-            // Still got pointer - try using raw.githubusercontent.com with ?raw=true
-            console.log('Still got LFS pointer, trying raw.githubusercontent.com...');
-            const rawUrl = `https://raw.githubusercontent.com/${repoOwner}/${repoName}/main/wine_embeddings.json`;
-            const rawResponse = await fetch(rawUrl);
-            const rawText = await rawResponse.text();
+          // For large files (>1MB), GitHub API returns download_url pointing to raw.githubusercontent.com
+          // For Git LFS files, we need to use the download_url which should serve the actual content
+          if (apiData.download_url) {
+            console.log('Using download_url from GitHub API:', apiData.download_url);
             
-            if (rawText.trim().startsWith('version https://git-lfs.github.com/spec/v1')) {
-              // Last resort: Try to get the actual blob via Git API
-              // This requires getting the commit SHA first, then the tree, then the blob
-              console.log('Trying to fetch via Git API (commit -> tree -> blob)...');
-              
-              // Get the latest commit
-              const commitsUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/commits?per_page=1`;
-              const commitsResponse = await fetch(commitsUrl);
-              
-              if (commitsResponse.ok) {
-                const commits = await commitsResponse.json();
-                if (commits.length > 0) {
-                  const commitSha = commits[0].sha;
-                  console.log('Latest commit SHA:', commitSha);
-                  
-                  // Get the tree
-                  const commitUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/git/commits/${commitSha}`;
-                  const commitData = await fetch(commitUrl).then(r => r.json());
-                  const treeSha = commitData.tree.sha;
-                  
-                  // Get tree with recursive to find the file
-                  const treeUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/git/trees/${treeSha}?recursive=1`;
-                  const treeData = await fetch(treeUrl).then(r => r.json());
-                  const fileEntry = treeData.tree.find(e => e.path === 'wine_embeddings.json');
-                  
-                  if (fileEntry && fileEntry.sha) {
-                    // Get the blob - but this will also be the LFS pointer
-                    // For LFS files, we need the actual content from LFS storage
-                    throw new Error(`Git LFS file detected (SHA: ${fileEntry.sha.substring(0, 16)}...). Large files tracked by Git LFS cannot be accessed directly via GitHub's HTTP API. Consider: 1) Using a backend API, 2) Splitting into chunks, 3) Using a CDN, or 4) Using GitHub Releases.`);
-                  }
-                }
+            // Try the download_url - for LFS files, this should give us the actual content
+            embeddingsResponse = await fetch(apiData.download_url, {
+              headers: {
+                'Accept': 'application/json, */*'
               }
-              
-              throw new Error('Git LFS file cannot be accessed directly via HTTP. The file needs to be served via a backend API, CDN, or split into smaller chunks.');
+            });
+            
+            if (!embeddingsResponse.ok) {
+              throw new Error(`Failed to download file: ${embeddingsResponse.status}`);
             }
             
-            embeddingsData = JSON.parse(rawText);
+            // Read the actual content
+            const actualText = await embeddingsResponse.text();
+            console.log(`Downloaded file size: ${actualText.length} characters`);
+            
+            // Check if we still got a pointer
+            if (actualText.trim().startsWith('version https://git-lfs.github.com/spec/v1')) {
+              // Still got pointer - try using raw.githubusercontent.com with ?raw=true
+              console.log('Still got LFS pointer, trying raw.githubusercontent.com...');
+              const rawUrl = `https://raw.githubusercontent.com/${repoOwner}/${repoName}/main/wine_embeddings.json`;
+              const rawResponse = await fetch(rawUrl);
+              const rawText = await rawResponse.text();
+              
+              if (rawText.trim().startsWith('version https://git-lfs.github.com/spec/v1')) {
+                // Last resort: Try to get the actual blob via Git API
+                // This requires getting the commit SHA first, then the tree, then the blob
+                console.log('Trying to fetch via Git API (commit -> tree -> blob)...');
+                
+                // Get the latest commit
+                const commitsUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/commits?per_page=1`;
+                const commitsResponse = await fetch(commitsUrl);
+                
+                if (commitsResponse.ok) {
+                  const commits = await commitsResponse.json();
+                  if (commits.length > 0) {
+                    const commitSha = commits[0].sha;
+                    console.log('Latest commit SHA:', commitSha);
+                    
+                    // Get the tree
+                    const commitUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/git/commits/${commitSha}`;
+                    const commitData = await fetch(commitUrl).then(r => r.json());
+                    const treeSha = commitData.tree.sha;
+                    
+                    // Get tree with recursive to find the file
+                    const treeUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/git/trees/${treeSha}?recursive=1`;
+                    const treeData = await fetch(treeUrl).then(r => r.json());
+                    const fileEntry = treeData.tree.find(e => e.path === 'wine_embeddings.json');
+                    
+                    if (fileEntry && fileEntry.sha) {
+                      // Get the blob - but this will also be the LFS pointer
+                      // For LFS files, we need the actual content from LFS storage
+                      throw new Error(`Git LFS file detected (SHA: ${fileEntry.sha.substring(0, 16)}...). Large files tracked by Git LFS cannot be accessed directly via GitHub's HTTP API. Consider: 1) Using a backend API, 2) Splitting into chunks, 3) Using a CDN, or 4) Using GitHub Releases.`);
+                    }
+                  }
+                }
+                
+                throw new Error('Git LFS file cannot be accessed directly via HTTP. The file needs to be served via a backend API, CDN, or split into smaller chunks.');
+              }
+              
+              embeddingsData = JSON.parse(rawText);
+            } else {
+              // Parse JSON
+              embeddingsData = JSON.parse(actualText);
+            }
+          } else if (apiData.content && apiData.encoding === 'base64') {
+            // Small file, content is base64 encoded
+            console.log('Decoding base64 content...');
+            const decoded = atob(apiData.content.replace(/\s/g, ''));
+            embeddingsData = JSON.parse(decoded);
           } else {
-            // Parse JSON
-            embeddingsData = JSON.parse(actualText);
+            throw new Error('GitHub API did not return file content in expected format');
           }
-        } else if (apiData.content && apiData.encoding === 'base64') {
-          // Small file, content is base64 encoded
-          console.log('Decoding base64 content...');
-          const decoded = atob(apiData.content.replace(/\s/g, ''));
-          embeddingsData = JSON.parse(decoded);
         } else {
-          throw new Error('GitHub API did not return file content in expected format');
-        }
-      } else {
         // Not an LFS pointer, parse directly
         if (!text.trim().startsWith('{') && !text.trim().startsWith('[')) {
           throw new Error('File does not appear to be valid JSON');
